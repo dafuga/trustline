@@ -70,15 +70,13 @@ async function acceptRequest(context: Context, peer: Peer, message: RequestMessa
     return
   }
   const receivedAt = now()
-  const gate = evaluateRequest({ ...message, grants: peer.grants })
+  const gate = evaluateRequest({ action: message.action, grants: peer.grants })
   const item: InboxItem = {
     id: message.requestId,
     helperId: peer.id,
     helperName: peer.name,
-    category: message.category,
-    categories: gate.categories,
-    alwaysAsk: gate.alwaysAsk,
-    instruction: message.instruction,
+    action: message.action,
+    sensitive: gate.sensitive,
     receivedAt,
     // A helper can shorten a request's life, but not extend it past the local limit.
     expiresAt: Math.min(message.expiresAt, receivedAt + REQUEST_TTL_MS),
@@ -90,9 +88,7 @@ async function acceptRequest(context: Context, peer: Peer, message: RequestMessa
     requestId: item.id,
     helperId: peer.id,
     helperName: peer.name,
-    claimedCategory: item.category,
-    categories: item.categories,
-    instruction: item.instruction,
+    action: item.action,
   })
   if (gate.decision === 'auto') {
     await home.appendLog(receivedAt, 'request.approved', { requestId: item.id, decidedBy: 'grant' })

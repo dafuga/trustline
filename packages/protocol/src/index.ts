@@ -1,3 +1,4 @@
+export * from './actions.js'
 export * from './crypto.js'
 export * from './encoding.js'
 export * from './errors.js'

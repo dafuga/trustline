@@ -65,7 +65,7 @@ function decodeOrNull(text: string): Uint8Array | null {
   }
 }
 
-function envelopeSigningBytes(e: Omit<Envelope, 'signature'>): Uint8Array {
+export function envelopeSigningBytes(e: Omit<Envelope, 'signature'>): Uint8Array {
   return encodeFields(
     ENVELOPE_DOMAIN,
     String(e.v),

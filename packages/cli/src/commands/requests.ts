@@ -1,10 +1,14 @@
 import {
+  Action,
   Category,
   MAX_INSTRUCTION_LENGTH,
-  RequestMessage,
+  canonicalUrl,
+  describeAction,
+  isGrantableAction,
   randomBytes,
   sealMessage,
   toHex,
+  type RequestMessage,
 } from '@dafuga/trustline-protocol'
 import { findPeer, updatePeer, withRelay, type Context } from '../context.js'
 import { CliError, ExitCode } from '../errors.js'
@@ -18,10 +22,11 @@ import { REQUEST_TTL_MS, decisionFor, expireRequests, queueMessage, relayNote, s
 function renderItem(item: InboxItem): string {
   return [
     `${item.id}  [${item.state}]  from ${sanitize(item.helperName)}`,
-    `  categories: ${item.categories.join(', ')}${item.alwaysAsk ? '  (always needs your approval)' : ''}`,
+    `  action: ${item.action.kind}${item.sensitive ? '  (always needs your approval)' : ''}`,
+    ...(item.action.kind === 'instruction' ? [`  helper's label: ${item.action.category} (not verified)`] : []),
     `  received: ${formatTime(item.receivedAt)}   expires: ${formatTime(item.expiresAt)}`,
     // Indented so a multi-line instruction can't pose as another entry.
-    `  instruction: ${sanitize(item.instruction).replaceAll('\n', '\n    | ')}`,
+    `  request: ${sanitize(describeAction(item.action)).replaceAll('\n', '\n    | ')}`,
   ].join('\n')
 }
 
@@ -91,16 +96,41 @@ function resolvePerson(peers: Peer[], reference: string | undefined): Peer {
   return only
 }
 
-export async function send(
-  context: Context,
-  options: { instruction: string; to?: string; category: string },
-): Promise<CommandResult> {
-  const { home, identity, now } = context
-  const category = Category.safeParse(options.category)
-  if (!category.success) throw new CliError(ExitCode.USAGE, 'invalid_category', `Unknown category "${options.category}"`)
-  if (!RequestMessage.shape.instruction.safeParse(options.instruction).success) {
-    throw new CliError(ExitCode.USAGE, 'invalid_instruction', `Instructions must be 1 to ${MAX_INSTRUCTION_LENGTH} characters`)
+export interface SendOptions {
+  words: string[]
+  to?: string
+  category?: string
+  action?: string
+  folder?: string
+  url?: string
+}
+
+/** Builds the action from flags. Plain words are free text; `--action` is for the closed list. */
+function actionFrom(options: SendOptions): Action {
+  const { words, category, action, folder, url } = options
+  if (action === undefined || action === 'instruction') {
+    if (folder !== undefined || url !== undefined) {
+      throw new CliError(ExitCode.USAGE, 'usage', '--folder and --url go with --action')
+    }
+    const label = Category.safeParse(category ?? 'other')
+    if (!label.success) throw new CliError(ExitCode.USAGE, 'invalid_category', `Unknown category "${category}"`)
+    const parsed = Action.safeParse({ kind: 'instruction', category: label.data, text: words.join(' ') })
+    if (!parsed.success) {
+      throw new CliError(ExitCode.USAGE, 'invalid_instruction', `Instructions must be 1 to ${MAX_INSTRUCTION_LENGTH} characters`)
+    }
+    return parsed.data
   }
+  if (!isGrantableAction(action)) throw new CliError(ExitCode.USAGE, 'invalid_action', `Unknown action "${action}"`)
+  if (words.length > 0 || category !== undefined) {
+    throw new CliError(ExitCode.USAGE, 'usage', 'An --action takes no free text or --category')
+  }
+  const scope = { check_status: {}, list_files: { folder }, open_url: { url: url && canonicalUrl(url) } }[action]
+  return Action.parse({ kind: action, ...scope })
+}
+
+export async function send(context: Context, options: SendOptions): Promise<CommandResult> {
+  const { home, identity, now } = context
+  const action = actionFrom(options)
 
   // Picks up any revocation that arrived while we were away.
   await sync(context)
@@ -115,8 +145,7 @@ export async function send(
     const message: RequestMessage = {
       type: 'request',
       requestId: `req_${toHex(randomBytes(8))}`,
-      category: category.data,
-      instruction: options.instruction,
+      action,
       createdAt,
       expiresAt: createdAt + REQUEST_TTL_MS,
     }
@@ -140,8 +169,7 @@ export async function send(
       {
         id: message.requestId,
         personId: peer.id,
-        category: message.category,
-        instruction: message.instruction,
+        action,
         sentAt: createdAt,
         expiresAt: message.expiresAt,
         state: 'sent',

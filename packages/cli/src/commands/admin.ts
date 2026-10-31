@@ -1,4 +1,11 @@
-import { Category, isGrantable } from '@dafuga/trustline-protocol'
+import {
+  Grant,
+  canonicalUrl,
+  describeGrant,
+  isGrantableAction,
+  isNeverAuto,
+  sameGrant,
+} from '@dafuga/trustline-protocol'
 import { findPeer, updatePeer, type Context } from '../context.js'
 import { CliError, ExitCode } from '../errors.js'
 import type { Peer } from '../home.js'
@@ -39,7 +46,7 @@ export async function status(context: Context, options: { offline: boolean }): P
       ...peers.map(
         (peer) =>
           `${peer.role}: ${sanitize(peer.name)} ${peer.id} [${peer.status}]` +
-          (peer.role === 'helper' ? ` grants: ${peer.grants.join(', ') || 'none (ask-only)'}` : ''),
+          (peer.role === 'helper' ? ` grants: ${grantsText(peer.grants)}` : ''),
       ),
       ...sent.map((item) => `sent: ${item.id} [${item.state}]`),
     ].join('\n'),
@@ -114,27 +121,43 @@ export async function revoke(context: Context, options: { helper?: string; all: 
   }
 }
 
-export async function setGrant(
-  context: Context,
-  options: { helper: string; category: string; granted: boolean },
-): Promise<CommandResult> {
-  const { home, now } = context
-  const category = Category.safeParse(options.category)
-  if (!category.success) throw new CliError(ExitCode.USAGE, 'invalid_category', `Unknown category "${options.category}"`)
-  if (options.granted && !isGrantable(category.data)) {
-    throw new CliError(ExitCode.CONFLICT, 'not_grantable', `"${category.data}" always needs your approval and cannot be granted`)
+export interface GrantOptions {
+  helper: string
+  action: string
+  folder?: string
+  url?: string
+  granted: boolean
+}
+
+function grantFrom({ action, folder, url }: GrantOptions): Grant {
+  if (isNeverAuto(action)) {
+    throw new CliError(ExitCode.CONFLICT, 'not_grantable', `"${action}" always needs your approval and cannot be granted`)
   }
+  if (!isGrantableAction(action)) throw new CliError(ExitCode.USAGE, 'invalid_action', `Unknown action "${action}"`)
+  const scope = { check_status: {}, list_files: { folder }, open_url: { url: url && canonicalUrl(url) } }[action]
+  const extra = (folder !== undefined && action !== 'list_files') || (url !== undefined && action !== 'open_url')
+  if (extra) throw new CliError(ExitCode.USAGE, 'usage', `--folder goes with list_files and --url with open_url`)
+  return Grant.parse({ action, ...scope })
+}
+
+function grantsText(grants: Grant[]): string {
+  return grants.map(describeGrant).join(', ') || 'none (ask-only)'
+}
+
+export async function setGrant(context: Context, options: GrantOptions): Promise<CommandResult> {
+  const { home, now } = context
+  const grant = grantFrom(options)
   return home.locked(async () => {
     const peers = await home.peers()
     const peer = findPeer(peers, options.helper, 'helper')
     if (peer.status !== 'active') throw new CliError(ExitCode.REVOKED, 'helper_revoked', 'This helper was revoked')
-    const others = peer.grants.filter((grant) => grant !== category.data)
-    const grants = options.granted ? [...others, category.data] : others
+    const others = peer.grants.filter((existing) => !sameGrant(existing, grant))
+    const grants = options.granted ? [...others, grant] : others
     await updatePeer(home, peer.id, { grants })
     await home.appendLog(now(), 'permissions.changed', { helperId: peer.id, grants })
     return {
       data: { helper: publicPeer({ ...peer, grants }) },
-      text: `${sanitize(peer.name)} grants: ${grants.join(', ') || 'none (ask-only)'}`,
+      text: `${sanitize(peer.name)} grants: ${grantsText(grants)}`,
     }
   })
 }

@@ -4,12 +4,14 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import {
-  Category,
+  Action,
+  Grant,
   Identity,
   LogHead,
   PairingState,
   generateIdentity,
   nextLogEntry,
+  parseGrants,
   verifyLog,
   type LogEntry,
   type LogVerification,
@@ -27,7 +29,8 @@ export const Peer = z.strictObject({
   pairedAt: z.number(),
   status: z.enum(['active', 'revoked']),
   revokedAt: z.number().optional(),
-  grants: z.array(Category),
+  /** Filtered on every load, so a hand-edited `payments` never makes it into memory. */
+  grants: z.preprocess(parseGrants, z.array(Grant)),
   sendSeq: z.number().int().nonnegative(),
   recvSeq: z.number().int().nonnegative(),
 })
@@ -37,10 +40,9 @@ export const InboxItem = z.strictObject({
   id: z.string(),
   helperId: z.string(),
   helperName: z.string(),
-  category: Category,
-  categories: z.array(Category),
-  alwaysAsk: z.boolean(),
-  instruction: z.string(),
+  action: Action,
+  /** Free text, so nothing is known about what it would do. */
+  sensitive: z.boolean(),
   receivedAt: z.number(),
   expiresAt: z.number(),
   state: z.enum(['pending', 'approved', 'denied', 'expired', 'revoked']),
@@ -52,8 +54,7 @@ export type InboxItem = z.infer<typeof InboxItem>
 export const SentItem = z.strictObject({
   id: z.string(),
   personId: z.string(),
-  category: Category,
-  instruction: z.string(),
+  action: Action,
   sentAt: z.number(),
   expiresAt: z.number(),
   state: z.enum(['sent', 'approved', 'denied']),

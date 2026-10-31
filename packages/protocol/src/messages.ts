@@ -1,13 +1,6 @@
 import { z } from 'zod'
+import { Action } from './actions.js'
 
-export const ALWAYS_ASK_CATEGORIES = ['payments', 'sends', 'deletes', 'installs', 'settings'] as const
-export const GRANTABLE_CATEGORIES = ['info', 'reminders'] as const
-export const CATEGORIES = [...ALWAYS_ASK_CATEGORIES, ...GRANTABLE_CATEGORIES, 'other'] as const
-
-export const Category = z.enum(CATEGORIES)
-export type Category = z.infer<typeof Category>
-
-export const MAX_INSTRUCTION_LENGTH = 4000
 export const MAX_NAME_LENGTH = 64
 
 const base64 = z.string().regex(/^[A-Za-z0-9+/]*={0,2}$/)
@@ -30,8 +23,7 @@ export const RequestId = z.string().regex(/^req_[0-9a-f]{16}$/)
 export const RequestMessage = z.strictObject({
   type: z.literal('request'),
   requestId: RequestId,
-  category: Category,
-  instruction: z.string().min(1).max(MAX_INSTRUCTION_LENGTH),
+  action: Action,
   createdAt: z.number().int().nonnegative(),
   expiresAt: z.number().int().nonnegative(),
 })

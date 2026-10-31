@@ -17,8 +17,7 @@ const bob = generateIdentity()
 const request = {
   type: 'request' as const,
   requestId: 'req_0123456789abcdef',
-  category: 'other' as const,
-  instruction: 'Please open the photo album',
+  action: { kind: 'instruction' as const, category: 'other' as const, text: 'Please open the photo album' },
   createdAt: 1,
   expiresAt: 2,
 }

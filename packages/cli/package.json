@@ -17,5 +17,8 @@
     "@dafuga/trustline-protocol": "^0.1.0",
     "@dafuga/trustline-relay": "^0.1.0",
     "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "tweetnacl": "^1.0.3"
   }
 }

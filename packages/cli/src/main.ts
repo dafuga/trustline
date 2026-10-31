@@ -31,6 +31,7 @@ interface Command {
 }
 
 const wait: Options = { wait: { type: 'string' } }
+const grantScope: Options = { folder: { type: 'string' }, url: { type: 'string' } }
 
 function seconds(value: unknown): number {
   if (value === undefined) return 0
@@ -102,27 +103,43 @@ const COMMANDS: Record<string, Command> = {
     },
   },
   grant: {
+    options: grantScope,
     positionals: 2,
-    usage: 'grant <helper> <info|reminders>',
-    run: (context, _values, [helper, category]) =>
-      setGrant(context, { helper: helper as string, category: category as string, granted: true }),
+    usage: 'grant <helper> check_status | list_files --folder <path> | open_url --url <https url>',
+    run: (context, values, [helper, action]) =>
+      setGrant(context, {
+        helper: helper as string,
+        action: action as string,
+        folder: values.folder as string | undefined,
+        url: values.url as string | undefined,
+        granted: true,
+      }),
   },
   ungrant: {
+    options: grantScope,
     positionals: 2,
-    usage: 'ungrant <helper> <category>',
-    run: (context, _values, [helper, category]) =>
-      setGrant(context, { helper: helper as string, category: category as string, granted: false }),
+    usage: 'ungrant <helper> <action> [--folder <path>] [--url <https url>]',
+    run: (context, values, [helper, action]) =>
+      setGrant(context, {
+        helper: helper as string,
+        action: action as string,
+        folder: values.folder as string | undefined,
+        url: values.url as string | undefined,
+        granted: false,
+      }),
   },
   send: {
-    options: { to: { type: 'string' }, category: { type: 'string' } },
-    positionals: 1,
+    options: { ...grantScope, to: { type: 'string' }, category: { type: 'string' }, action: { type: 'string' } },
     variadic: true,
-    usage: 'send [--to <person>] [--category <category>] <instruction...>',
+    usage: 'send [--to <person>] [--category <category>] <instruction...> | send --action <action> [--folder <path>] [--url <url>]',
     run: (context, values, words) =>
       send(context, {
-        instruction: words.join(' '),
+        words,
         to: values.to as string | undefined,
-        category: (values.category as string | undefined) ?? 'other',
+        category: values.category as string | undefined,
+        action: values.action as string | undefined,
+        folder: values.folder as string | undefined,
+        url: values.url as string | undefined,
       }),
   },
 }

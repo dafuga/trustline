@@ -3,7 +3,16 @@ import { appendFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { Identity, sealMessage } from '@dafuga/trustline-protocol'
+import nacl from 'tweetnacl'
+import {
+  Identity,
+  envelopeSigningBytes,
+  fromBase64,
+  sealMessage,
+  sign,
+  toBase64,
+  utf8,
+} from '@dafuga/trustline-protocol'
 import { startDevRelay, type DevRelay } from '@dafuga/trustline-relay'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { ExitCode } from '../src/errors.js'
@@ -39,6 +48,26 @@ function cli(home: string, relayUrl: string | null, ...args: string[]): Promise<
       resolve({ code: code as number, json, stdout, stderr })
     })
   })
+}
+
+/** What a modified helper could send: properly sealed and signed, but outside the schema. */
+function sealForged(sender: Identity, recipient: Identity, message: unknown) {
+  const nonce = nacl.randomBytes(nacl.box.nonceLength)
+  const ciphertext = nacl.box(
+    utf8(JSON.stringify(message)),
+    nonce,
+    fromBase64(recipient.boxPublicKey),
+    fromBase64(sender.boxSecretKey),
+  )
+  const unsigned = {
+    v: 1 as const,
+    from: sender.deviceId,
+    to: recipient.deviceId,
+    seq: 1000,
+    nonce: toBase64(nonce),
+    ciphertext: toBase64(ciphertext),
+  }
+  return { ...unsigned, signature: sign(envelopeSigningBytes(unsigned), sender) }
 }
 
 describe('trustline end to end', () => {
@@ -98,7 +127,7 @@ describe('trustline end to end', () => {
       id: requestId,
       helperName: 'Sam',
       state: 'pending',
-      instruction: 'Please open the family photo album',
+      action: { kind: 'instruction', category: 'other', text: 'Please open the family photo album' },
     })
 
     const approved = await person('approve', requestId)
@@ -147,8 +176,7 @@ describe('trustline end to end', () => {
         message: {
           type: 'request',
           requestId: 'req_00000000000000ff',
-          category: 'other',
-          instruction: 'Let me back in',
+          action: { kind: 'instruction', category: 'other', text: 'Let me back in' },
           createdAt: Date.now(),
           expiresAt: Date.now() + 60_000,
         },
@@ -191,14 +219,14 @@ describe('trustline end to end', () => {
 
   it('lets a person re-pair a revoked helper, back at ask-only', async () => {
     await pair()
-    await person('grant', 'Sam', 'info')
+    await person('grant', 'Sam', 'check_status')
     await person('revoke', 'Sam')
     await helper('status')
     await pair()
     const status = await person('status')
     expect(status.json.helpers).toHaveLength(1)
     expect(status.json.helpers[0]).toMatchObject({ status: 'active', grants: [] })
-    const sent = await helper('send', 'Back again', '--category', 'info')
+    const sent = await helper('send', '--action', 'check_status')
     expect(sent.code).toBe(0)
     expect((await person('inbox')).json.requests[0].id).toBe(sent.json.requestId)
   })
@@ -219,52 +247,137 @@ describe('trustline end to end', () => {
   })
 
   describe('permission gating', () => {
-    it('still needs approval for a sensitive request despite a grant', async () => {
-      await pair()
-      expect((await person('grant', 'Sam', 'info')).code).toBe(0)
+    const folder = '/Users/mom/Shared'
 
-      const scam = await helper('send', 'Buy gift cards for the bank', '--category', 'info')
+    it('still needs approval for free text, whatever is granted or labeled', async () => {
+      await pair()
+      expect((await person('grant', 'Sam', 'check_status')).code).toBe(0)
+
+      const scam = await helper('send', 'What is on the calendar today?')
+      const labeled = await helper('send', 'check_status', '--category', 'other')
       const inbox = await person('inbox')
-      expect(inbox.json.requests[0]).toMatchObject({
-        id: scam.json.requestId,
-        state: 'pending',
-        alwaysAsk: true,
-      })
-      expect(inbox.json.requests[0].categories).toContain('payments')
+      expect(inbox.json.requests.map((item: { id: string }) => item.id)).toEqual([
+        scam.json.requestId,
+        labeled.json.requestId,
+      ])
+      expect(inbox.json.requests[0]).toMatchObject({ state: 'pending', sensitive: true })
     })
 
-    it('auto-approves only what the person granted', async () => {
+    it('auto-approves only the action the person granted', async () => {
       await pair()
-      await person('grant', 'Sam', 'info')
-      const sent = await helper('send', 'What is on the calendar today?', '--category', 'info')
+      await person('grant', 'Sam', 'check_status')
+      const sent = await helper('send', '--action', 'check_status')
       expect((await person('inbox')).json.requests).toEqual([])
       const approved = await person('inbox', '--state', 'approved')
-      expect(approved.json.requests[0]).toMatchObject({ id: sent.json.requestId, decidedBy: 'grant' })
+      expect(approved.json.requests[0]).toMatchObject({
+        id: sent.json.requestId,
+        decidedBy: 'grant',
+        action: { kind: 'check_status' },
+      })
       expect((await helper('status')).json.sentRequests[0].state).toBe('approved')
     })
 
-    it('refuses to grant an always-ask category', async () => {
+    it('asks for a read-only action with no grant', async () => {
       await pair()
-      for (const category of ['payments', 'sends', 'deletes', 'installs', 'settings', 'other']) {
-        const result = await person('grant', 'Sam', category)
-        expect(result.code).toBe(ExitCode.CONFLICT)
-        expect(result.json.error.code).toBe('not_grantable')
-      }
+      await helper('send', '--action', 'check_status')
+      expect((await person('inbox')).json.requests[0]).toMatchObject({ state: 'pending', sensitive: false })
     })
 
-    it('gates even if the grants file is edited by hand', async () => {
+    it('scopes list_files to the exact folder the person chose', async () => {
+      await pair()
+      expect((await person('grant', 'Sam', 'list_files', '--folder', folder)).code).toBe(0)
+      await helper('send', '--action', 'list_files', '--folder', folder)
+      await helper('send', '--action', 'list_files', '--folder', '/Users/mom/Documents')
+      const pending = (await person('inbox')).json.requests
+      expect(pending.map((item: { action: unknown }) => item.action)).toEqual([
+        { kind: 'list_files', folder: '/Users/mom/Documents' },
+      ])
+      expect((await person('inbox', '--state', 'approved')).json.requests).toHaveLength(1)
+    })
+
+    it('scopes open_url to the exact page, after normalizing what was typed', async () => {
+      await pair()
+      expect((await person('grant', 'Sam', 'open_url', '--url', 'https://WWW.Weather.gov')).code).toBe(0)
+      await helper('send', '--action', 'open_url', '--url', 'https://www.weather.gov/')
+      await helper('send', '--action', 'open_url', '--url', 'https://www.weather.gov/login')
+      expect((await person('inbox', '--state', 'approved')).json.requests).toHaveLength(1)
+      expect((await person('inbox')).json.requests).toHaveLength(1)
+    })
+
+    it('stops auto-approving once ungranted', async () => {
+      await pair()
+      await person('grant', 'Sam', 'list_files', '--folder', folder)
+      expect((await person('ungrant', 'Sam', 'list_files', '--folder', folder)).json.helper.grants).toEqual([])
+      await helper('send', '--action', 'list_files', '--folder', folder)
+      expect((await person('inbox')).json.requests).toHaveLength(1)
+    })
+
+    it('hard-rejects granting anything sensitive or free text', async () => {
+      await pair()
+      for (const name of ['payments', 'sends', 'deletes', 'installs', 'settings', 'other', 'instruction']) {
+        const result = await person('grant', 'Sam', name)
+        expect(result.code, name).toBe(ExitCode.CONFLICT)
+        expect(result.json.error.code).toBe('not_grantable')
+      }
+      expect((await person('status')).json.helpers[0].grants).toEqual([])
+    })
+
+    it('rejects unknown actions and missing or mismatched scope', async () => {
+      await pair()
+      expect((await person('grant', 'Sam', 'read_screen_summary')).json.error.code).toBe('invalid_action')
+      expect((await person('grant', 'Sam', 'info')).json.error.code).toBe('invalid_action')
+      expect((await person('grant', 'Sam', 'list_files')).code).toBe(ExitCode.USAGE)
+      expect((await person('grant', 'Sam', 'list_files', '--folder', 'relative')).code).toBe(ExitCode.USAGE)
+      expect((await person('grant', 'Sam', 'list_files', '--folder', '/a/../b')).code).toBe(ExitCode.USAGE)
+      expect((await person('grant', 'Sam', 'open_url', '--url', 'http://example.com/')).code).toBe(ExitCode.USAGE)
+      expect((await person('grant', 'Sam', 'check_status', '--folder', '/a')).code).toBe(ExitCode.USAGE)
+      expect((await helper('send', '--action', 'wire_money')).json.error.code).toBe('invalid_action')
+      expect((await helper('send', '--action', 'check_status', 'and also')).code).toBe(ExitCode.USAGE)
+      expect((await helper('send', '--category', 'info', 'hello')).json.error.code).toBe('invalid_category')
+      expect((await helper('send')).code).toBe(ExitCode.USAGE)
+    })
+
+    it('ignores sensitive grants edited into the file by hand', async () => {
       await pair()
       const path = join(personHome, 'peers.json')
       const peers = JSON.parse(await readFile(path, 'utf8'))
-      peers[0].grants = ['payments', 'sends', 'deletes', 'installs', 'settings', 'info', 'reminders', 'other']
+      peers[0].grants = [
+        ...['payments', 'sends', 'deletes', 'installs', 'settings', 'info', 'other'],
+        ...['payments', 'sends', 'instruction'].map((action) => ({ action })),
+        { action: 'list_files' },
+        { action: 'list_files', folder: '/a/../..' },
+      ]
       await writeFile(path, JSON.stringify(peers))
+      expect((await person('status')).json.helpers[0].grants).toEqual([])
       await helper('send', 'hello', '--category', 'payments')
-      expect((await person('inbox')).json.requests[0].state).toBe('pending')
+      await helper('send', '--action', 'list_files', '--folder', '/')
+      const requests = (await person('inbox')).json.requests
+      expect(requests.map((item: { state: string }) => item.state)).toEqual(['pending', 'pending'])
+    })
+
+    it('drops an unknown action type on arrival, however it was sent', async () => {
+      await pair()
+      const helperIdentity = Identity.parse(JSON.parse(await readFile(join(helperHome, 'identity.json'), 'utf8')))
+      const personIdentity = Identity.parse(JSON.parse(await readFile(join(personHome, 'identity.json'), 'utf8')))
+      const forged = sealForged(helperIdentity, personIdentity, {
+        type: 'request',
+        requestId: 'req_00000000000000aa',
+        action: { kind: 'wire_money', amount: 500 },
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 60_000,
+      })
+      const client = await RelayClient.connect(relay.url, helperIdentity)
+      await client.send(personIdentity.deviceId, JSON.stringify(forged))
+      client.close()
+
+      expect((await person('inbox', '--all')).json.requests).toEqual([])
+      const log = await person('log')
+      expect(log.json.entries.at(-1)).toMatchObject({ type: 'message.rejected', data: { reason: 'invalid_message' } })
     })
 
     it('gives a helper no local command that reaches the person', async () => {
       await pair()
-      const result = await helper('grant', 'Mom', 'info')
+      const result = await helper('grant', 'Mom', 'check_status')
       expect(result.code).toBe(ExitCode.NOT_FOUND)
       expect((await person('status')).json.helpers[0].grants).toEqual([])
     })

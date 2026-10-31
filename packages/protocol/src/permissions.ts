@@ -1,59 +1,36 @@
-import { ALWAYS_ASK_CATEGORIES, GRANTABLE_CATEGORIES, type Category } from './messages.js'
-
-const ALWAYS_ASK: readonly Category[] = ALWAYS_ASK_CATEGORIES
-const GRANTABLE: readonly Category[] = GRANTABLE_CATEGORIES
-
-export function isAlwaysAsk(category: Category): boolean {
-  return ALWAYS_ASK.includes(category)
-}
-
-export function isGrantable(category: Category): boolean {
-  return GRANTABLE.includes(category)
-}
-
-const PATTERNS: Record<(typeof ALWAYS_ASK_CATEGORIES)[number], RegExp> = {
-  payments:
-    /\b(pay|pays|paid|paying|payment|wire|transfer|bank|credit card|debit|gift ?cards?|bitcoin|crypto|venmo|paypal|zelle|e-?transfer|purchase|buy|invoice|refund|donat\w*|money)\b|\$\s?\d/,
-  sends: /\b(send|email|e-mail|text|sms|message|post|share|forward|reply|tweet|dm)\b/,
-  deletes: /\b(delete|remove|erase|wipe|trash|rm|uninstall|format|purge|clear)\b/,
-  installs:
-    /\b(install\w*|download\w*|upgrade|anydesk|teamviewer|rustdesk|remote (access|desktop|support)|extension|plugin|sudo|run (this|the) (command|script))\b/,
-  settings:
-    /\b(settings?|password|passcode|2fa|two-factor|permissions?|grants?|trustline|preferences|disable|turn off|antivirus|firewall|config\w*)\b/,
-}
-
-/**
- * Local, conservative keyword scan. The helper's own label is never enough to
- * lower the bar, because a scammer would simply label a payment "info". This
- * can only ever add categories, so a miss falls back to the helper's label.
- */
-export function detectCategories(instruction: string): Category[] {
-  const text = instruction
-    .normalize('NFKC')
-    .replace(/[\u00ad\u200b-\u200f\u2060\ufeff]/g, '')
-    .toLowerCase()
-  return ALWAYS_ASK_CATEGORIES.filter((category) => PATTERNS[category].test(text))
-}
+import { Action, parseGrants, type Grant } from './actions.js'
 
 export interface GateResult {
   decision: 'auto' | 'ask'
-  /** The helper's label plus anything detected locally. */
-  categories: Category[]
-  /** True when no grant could ever skip approval for this request. */
-  alwaysAsk: boolean
+  /**
+   * True when nothing is known about what the request would do. Only the
+   * closed list of read-only actions is known; free text can say anything,
+   * so its helper-chosen label neither sets nor clears this.
+   */
+  sensitive: boolean
+}
+
+function covers(grant: Grant, action: Action): boolean {
+  switch (action.kind) {
+    case 'check_status':
+      return grant.action === 'check_status'
+    case 'list_files':
+      return grant.action === 'list_files' && grant.folder === action.folder
+    case 'open_url':
+      return grant.action === 'open_url' && grant.url === action.url
+    case 'instruction':
+      return false
+  }
 }
 
 /**
- * The single permission gate. Ask-only is the default, and a request is only
- * auto-approved when every category it touches is both grantable and granted.
+ * The single permission gate. Ask-only is the default: a request is
+ * auto-approved only when it is a read-only action in exactly the scope the
+ * person granted. Both inputs are re-checked here, so a caller can't widen it.
  */
-export function evaluateRequest(request: {
-  category: Category
-  instruction: string
-  grants: readonly Category[]
-}): GateResult {
-  const categories = [...new Set([request.category, ...detectCategories(request.instruction)])]
-  const alwaysAsk = categories.some(isAlwaysAsk)
-  const auto = !alwaysAsk && categories.every((c) => isGrantable(c) && request.grants.includes(c))
-  return { decision: auto ? 'auto' : 'ask', categories, alwaysAsk }
+export function evaluateRequest(request: { action: unknown; grants: unknown }): GateResult {
+  const action = Action.safeParse(request.action)
+  if (!action.success || action.data.kind === 'instruction') return { decision: 'ask', sensitive: true }
+  const granted = parseGrants(request.grants).some((grant) => covers(grant, action.data))
+  return { decision: granted ? 'auto' : 'ask', sensitive: false }
 }
