@@ -9,6 +9,7 @@ import {
   normalizePairingCode,
   pairedPeer,
   receivePairingPost,
+  safetyStringsMatch,
   startPairing,
   DEFAULT_PAIRING_TTL_MS,
   type PairingState,
@@ -17,6 +18,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { withRelay, type Context } from '../context.js'
 import { CliError, ExitCode } from '../errors.js'
 import type { PairingFile, Peer } from '../home.js'
+import { pairingCheck, requireHuman } from '../human.js'
 import { RelayRejection, type RelayClient } from '../relay-client.js'
 import type { CommandResult } from '../main.js'
 import { sanitize } from '../output.js'
@@ -67,6 +69,7 @@ async function finish(context: Context, file: PairingFile): Promise<Peer> {
     signPublicKey: verified.signPublicKey,
     boxPublicKey: verified.boxPublicKey,
     pairedAt: now(),
+    safetyString: state.safetyString as string,
     status: 'active',
     grants: [],
     // Counters survive a re-pair, or old envelopes would become replayable.
@@ -232,18 +235,31 @@ export async function pairConfirm(
 ): Promise<CommandResult> {
   const { home, identity, now } = context
   if (options.label !== undefined) DisplayName.parse(options.label)
-  const advanced = await home.locked(async (): Promise<Advanced> => {
+
+  /** Catches up with the room, and refuses unless there is a string left to confirm. */
+  const ready = async (client: RelayClient): Promise<PairingFile> => {
     const initial = await home.pairing()
     if (!initial) throw new CliError(ExitCode.NOT_FOUND, 'no_pairing', 'No pairing in progress')
     await checkExpiry(context, initial)
+    const { file } = await advance(context, client, initial)
+    if (file.state.stage !== 'awaiting_confirmation') {
+      throw new CliError(ExitCode.CONFLICT, 'not_ready', 'There is no safety string to confirm yet')
+    }
+    if (file.state.localConfirmed) {
+      throw new CliError(ExitCode.CONFLICT, 'already_confirmed', 'You already confirmed; run `trustline pair status`')
+    }
+    return file
+  }
+
+  const { state } = await home.locked(() => withRelay(context, ready))
+  // A wrong string can only cancel the pairing, so there's nothing to ask a person about.
+  if (safetyStringsMatch(options.safetyString, state.safetyString as string)) {
+    await requireHuman(context, pairingCheck(state.peer?.name ?? 'unknown', state.safetyString as string, state.roomId))
+  }
+
+  const advanced = await home.locked(async (): Promise<Advanced> => {
     return withRelay(context, async (client) => {
-      const { file } = await advance(context, client, initial)
-      if (file.state.stage !== 'awaiting_confirmation') {
-        throw new CliError(ExitCode.CONFLICT, 'not_ready', 'There is no safety string to confirm yet')
-      }
-      if (file.state.localConfirmed) {
-        throw new CliError(ExitCode.CONFLICT, 'already_confirmed', 'You already confirmed; run `trustline pair status`')
-      }
+      const file = await ready(client)
       const step = confirmPairing({ state: file.state, identity, entered: options.safetyString, now: now() })
       for (const outbound of step.outbound) await client.roomPost(file.state.roomId, outbound).catch(fromRelay)
       if (!step.matched) return fail(context, step.state, abortError(step.state))

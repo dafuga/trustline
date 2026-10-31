@@ -27,6 +27,8 @@ export const Peer = z.strictObject({
   signPublicKey: z.string(),
   boxPublicKey: z.string(),
   pairedAt: z.number(),
+  /** Shown in every confirmation window, so the person can tell which pairing is asking. */
+  safetyString: z.string(),
   status: z.enum(['active', 'revoked']),
   revokedAt: z.number().optional(),
   /** Filtered on every load, so a hand-edited `payments` never makes it into memory. */

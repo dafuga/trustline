@@ -1,8 +1,6 @@
-import { spawn } from 'node:child_process'
 import { appendFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import nacl from 'tweetnacl'
 import {
   Identity,
@@ -18,37 +16,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { ExitCode } from '../src/errors.js'
 import { DEFAULT_RELAY_URL } from '../src/context.js'
 import { RelayClient } from '../src/relay-client.js'
+import { ScriptedPrompt, cli as runCli } from './harness.js'
 
-const BIN = join(dirname(fileURLToPath(import.meta.url)), '../dist/bin.js')
-
-interface Run {
-  code: number
-  json: Record<string, any> // eslint-disable-line @typescript-eslint/no-explicit-any
-  stdout: string
-  stderr: string
-}
-
-function cli(home: string, relayUrl: string | null, ...args: string[]): Promise<Run> {
-  return new Promise((resolve, reject) => {
-    const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, TRUSTLINE_HOME: home }
-    if (relayUrl) env.TRUSTLINE_RELAY_URL = relayUrl
-    const child = spawn(process.execPath, [BIN, ...args], { env })
-    let stdout = ''
-    let stderr = ''
-    child.stdout.on('data', (chunk) => (stdout += chunk))
-    child.stderr.on('data', (chunk) => (stderr += chunk))
-    child.on('error', reject)
-    child.on('close', (code) => {
-      let json = {}
-      try {
-        json = JSON.parse(stdout)
-      } catch {
-        // Text-mode invocation.
-      }
-      resolve({ code: code as number, json, stdout, stderr })
-    })
-  })
-}
+const prompt = new ScriptedPrompt()
+const cli = (home: string, relayUrl: string | null, ...args: string[]) => runCli(prompt, home, relayUrl, ...args)
 
 /** What a modified helper could send: properly sealed and signed, but outside the schema. */
 function sealForged(sender: Identity, recipient: Identity, message: unknown) {

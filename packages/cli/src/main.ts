@@ -7,6 +7,7 @@ import { pairCancel, pairConfirm, pairJoin, pairStart, pairStatus } from './comm
 import { approve, deny, inbox, send } from './commands/requests.js'
 import { loadContext, type Context } from './context.js'
 import { CliError, ExitCode } from './errors.js'
+import { hostFor, systemPrompt, type PromptProvider } from './prompt.js'
 
 export interface CommandResult {
   data: Record<string, unknown>
@@ -159,6 +160,9 @@ function helpText(): string {
     ...lines,
     '  trustline relay dev [--port <n>] [--host <addr>]',
     '',
+    'approve, deny, grant, ungrant, and pair confirm open a confirmation window on this computer.',
+    'They only ask: a person has to answer that window, and nothing on the command line can.',
+    '',
     'Global flags: --json  --relay <url>  --help',
     'Environment: TRUSTLINE_HOME (config dir), TRUSTLINE_RELAY_URL',
   ].join('\n')
@@ -241,8 +245,17 @@ function toCliError(error: unknown): CliError {
   return new CliError(ExitCode.ERROR, 'internal', error instanceof Error ? error.message : String(error))
 }
 
+/**
+ * For tests only, and reachable only by calling `run` from code in this
+ * process. `bin.ts` never passes it, and on purpose no flag, environment
+ * variable, or file can: that would be a bypass any bot could type.
+ */
+export interface TestOverrides {
+  prompt?: PromptProvider
+}
+
 /** Runs one CLI invocation and returns its exit code. All state comes from `env`. */
-export async function run(argv: string[], env: NodeJS.ProcessEnv, io: Io): Promise<number> {
+export async function run(argv: string[], env: NodeJS.ProcessEnv, io: Io, overrides: TestOverrides = {}): Promise<number> {
   const json = argv.includes('--json')
   try {
     if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) {
@@ -253,10 +266,9 @@ export async function run(argv: string[], env: NodeJS.ProcessEnv, io: Io): Promi
     const { key, rest } = findCommand(argv)
     const command = COMMANDS[key] as Command
     const { values, positionals } = parse(command, rest)
-    const context = await loadContext(env, {
-      relay: values.relay as string | undefined,
-      name: values.name as string | undefined,
-    })
+    const flags = { relay: values.relay as string | undefined, name: values.name as string | undefined }
+    const prompt = overrides.prompt ?? systemPrompt(hostFor(env))
+    const context = await loadContext(env, flags, { prompt, notify: io.err })
     const result = await command.run(context, values, positionals)
     io.out(json ? JSON.stringify({ ok: true, ...result.data }) : result.text)
     return ExitCode.OK

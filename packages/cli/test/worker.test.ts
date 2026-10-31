@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { MAX_FRAME_BYTES } from '@dafuga/trustline-protocol'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { run } from '../src/main.js'
+import { ScriptedPrompt } from './harness.js'
 
 const RELAY_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../relay')
 
@@ -33,10 +34,12 @@ describe('Cloudflare Worker in local workerd', () => {
   const cli = async (home: string, ...args: string[]) => {
     let stdout = ''
     const env = { TRUSTLINE_HOME: join(root, home), TRUSTLINE_RELAY_URL: `ws://127.0.0.1:${port}` }
-    const code = await run([...args, '--json'], env, {
-      out: (text) => (stdout += text),
-      err: () => undefined,
-    })
+    const code = await run(
+      [...args, '--json'],
+      env,
+      { out: (text) => (stdout += text), err: () => undefined },
+      { prompt: new ScriptedPrompt() },
+    )
     return { code, json: JSON.parse(stdout) }
   }
 

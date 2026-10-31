@@ -9,6 +9,7 @@ import {
 import { findPeer, updatePeer, type Context } from '../context.js'
 import { CliError, ExitCode } from '../errors.js'
 import type { Peer } from '../home.js'
+import { grantCheck, requireHuman } from '../human.js'
 import type { CommandResult } from '../main.js'
 import { formatTime, sanitize } from '../output.js'
 import { queueMessage, relayNote, sync } from '../sync.js'
@@ -144,20 +145,34 @@ function grantsText(grants: Grant[]): string {
   return grants.map(describeGrant).join(', ') || 'none (ask-only)'
 }
 
+async function activeHelper(context: Context, reference: string): Promise<Peer> {
+  const peer = findPeer(await context.home.peers(), reference, 'helper')
+  if (peer.status !== 'active') throw new CliError(ExitCode.REVOKED, 'helper_revoked', 'This helper was revoked')
+  return peer
+}
+
+function grantResult(peer: Peer, grants: Grant[], extra: Record<string, unknown> = {}): CommandResult {
+  return {
+    data: { helper: publicPeer({ ...peer, grants }), ...extra },
+    text: `${sanitize(peer.name)} grants: ${grantsText(grants)}`,
+  }
+}
+
 export async function setGrant(context: Context, options: GrantOptions): Promise<CommandResult> {
   const { home, now } = context
   const grant = grantFrom(options)
+  const shown = await home.locked(() => activeHelper(context, options.helper))
+  // Nothing to change means nothing to ask about.
+  if (shown.grants.some((existing) => sameGrant(existing, grant)) === options.granted) {
+    return grantResult(shown, shown.grants, { changed: false })
+  }
+  const localAuth = await requireHuman(context, grantCheck(shown, grant, options.granted))
   return home.locked(async () => {
-    const peers = await home.peers()
-    const peer = findPeer(peers, options.helper, 'helper')
-    if (peer.status !== 'active') throw new CliError(ExitCode.REVOKED, 'helper_revoked', 'This helper was revoked')
+    const peer = await activeHelper(context, shown.id)
     const others = peer.grants.filter((existing) => !sameGrant(existing, grant))
     const grants = options.granted ? [...others, grant] : others
     await updatePeer(home, peer.id, { grants })
-    await home.appendLog(now(), 'permissions.changed', { helperId: peer.id, grants })
-    return {
-      data: { helper: publicPeer({ ...peer, grants }) },
-      text: `${sanitize(peer.name)} grants: ${grantsText(grants)}`,
-    }
+    await home.appendLog(now(), 'permissions.changed', { helperId: peer.id, grants, localAuth })
+    return grantResult(peer, grants, { changed: true, localAuth })
   })
 }

@@ -318,6 +318,10 @@ function onConfirm(state: PairingState, post: Extract<PairingPost, { kind: 'conf
  * mismatch aborts the pairing on both sides. Pairing can only complete after
  * both sides have called this, so a helper can never finish it alone.
  */
+export function safetyStringsMatch(entered: string, expected: string): boolean {
+  return normalizeSafetyString(entered) === normalizeSafetyString(expected)
+}
+
 export function confirmPairing(options: {
   state: PairingState
   identity: Identity
@@ -329,7 +333,7 @@ export function confirmPairing(options: {
     throw new ProtocolError('invalid_stage', 'Nothing to confirm yet')
   }
   assertLive(state, now)
-  if (normalizeSafetyString(entered) !== normalizeSafetyString(state.safetyString)) {
+  if (!safetyStringsMatch(entered, state.safetyString)) {
     return { ...abortPairing(state, 'safety_mismatch'), matched: false }
   }
   const signature = sign(confirmBytes(state.role, state.transcript), identity)

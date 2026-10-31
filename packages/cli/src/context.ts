@@ -1,6 +1,7 @@
 import type { Identity } from '@dafuga/trustline-protocol'
 import { CliError, ExitCode } from './errors.js'
 import { Home, type Peer } from './home.js'
+import type { PromptProvider } from './prompt.js'
 import { RelayClient } from './relay-client.js'
 
 /** A placeholder until a relay exists. `<account>` is the Cloudflare workers.dev subdomain. */
@@ -13,6 +14,10 @@ export interface Context {
   relayUrl: string
   name: string
   now: () => number
+  /** Asks the human, outside this process. See `requireHuman`. */
+  prompt: PromptProvider
+  /** A note for whoever is watching. Goes to stderr, so `--json` output stays clean. */
+  notify: (text: string) => void
 }
 
 export interface Flags {
@@ -20,14 +25,16 @@ export interface Flags {
   name?: string
 }
 
-export async function loadContext(env: NodeJS.ProcessEnv, flags: Flags): Promise<Context> {
+export type Runtime = Pick<Context, 'prompt' | 'notify'>
+
+export async function loadContext(env: NodeJS.ProcessEnv, flags: Flags, runtime: Runtime): Promise<Context> {
   const home = await Home.open(env)
   const identity = await home.identity()
   const config = await home.config()
   const relayUrl = flags.relay ?? env.TRUSTLINE_RELAY_URL ?? config.relayUrl ?? DEFAULT_RELAY_URL
   const name = flags.name ?? config.name ?? `device-${identity.deviceId.slice(0, 6)}`
   if (flags.relay !== config.relayUrl && flags.relay) await home.saveConfig({ ...config, relayUrl: flags.relay })
-  return { home, identity, relayUrl, name, now: Date.now }
+  return { home, identity, relayUrl, name, now: Date.now, ...runtime }
 }
 
 function assertRelayConfigured(relayUrl: string): void {

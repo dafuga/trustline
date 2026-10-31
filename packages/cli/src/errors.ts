@@ -10,6 +10,8 @@ export const ExitCode = {
   REVOKED: 7,
   CONFLICT: 8,
   LOG_TAMPERED: 9,
+  NOT_CONFIRMED: 10,
+  PROMPT_UNAVAILABLE: 11,
 } as const
 export type ExitCode = (typeof ExitCode)[keyof typeof ExitCode]
 
