@@ -1,4 +1,5 @@
 # No account_id on purpose. This Worker has not been deployed.
+# Once it is, clients use wss://trustline-relay.<account>.workers.dev.
 name = "trustline-relay"
 main = "src/worker.ts"
 compatibility_date = "2026-10-01"

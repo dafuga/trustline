@@ -54,6 +54,7 @@ export class Mailbox extends DurableObject<Env> {
     (ip) => ipGate(this.env, ip).take('message', DEFAULT_LIMITS.messagesPerIp),
     DEFAULT_LIMITS,
   )
+  private frames: Promise<void> = Promise.resolve()
 
   override async fetch(request: Request): Promise<Response> {
     if (request.headers.get('upgrade') !== 'websocket') return new Response('Expected WebSocket', { status: 426 })
@@ -66,7 +67,18 @@ export class Mailbox extends DurableObject<Env> {
     return new Response(null, { status: 101, webSocket: client })
   }
 
-  override async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+  /**
+   * A Durable Object takes the next frame while this one awaits another object.
+   * Connection state is read and written around those waits, so frames that
+   * overlapped would lose each other's updates and spend the same tokens.
+   */
+  override webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    this.frames = this.frames.then(() => this.processFrame(ws, message)).catch(() => undefined)
+    return this.frames
+  }
+
+  private async processFrame(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    if (ws.readyState !== WebSocket.OPEN) return
     const raw = typeof message === 'string' ? message : new TextDecoder().decode(message)
     const state = ws.deserializeAttachment() as ConnectionState
     const result = await handleFrame(state, raw, backendFor(this.env), this.guard)
