@@ -21,7 +21,8 @@ import { RelayRejection, type RelayClient } from '../relay-client.js'
 import type { CommandResult } from '../main.js'
 import { sanitize } from '../output.js'
 
-const POLL_MS = 250
+// Each poll is a new relay connection, so this has to sit inside the relay's per-device rate.
+const POLL_MS = 1000
 
 const SCAM_WARNING = [
   'Only share this code with someone you already know and trust.',

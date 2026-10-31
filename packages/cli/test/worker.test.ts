@@ -1,9 +1,11 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { mkdtemp, rm } from 'node:fs/promises'
+import { request as httpRequest } from 'node:http'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { MAX_FRAME_BYTES } from '@dafuga/trustline-protocol'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { run } from '../src/main.js'
 
@@ -90,4 +92,70 @@ describe('Cloudflare Worker in local workerd', () => {
     expect((await cli('helper', 'send', 'Again')).code).toBe(7)
     expect((await cli('person', 'log', 'verify')).code).toBe(0)
   }, 30_000)
+  it('hangs up on a message flood', async () => {
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/v1/ws/${'a'.repeat(32)}`)
+    const codes: string[] = []
+    socket.addEventListener('message', (event) => {
+      const { code } = JSON.parse(String(event.data)) as { code?: string }
+      if (code) codes.push(code)
+    })
+    await new Promise((resolve) => socket.addEventListener('open', resolve))
+    const closed = new Promise<number>((resolve) => socket.addEventListener('close', (event) => resolve(event.code)))
+    for (let reqId = 1; reqId <= 400; reqId++) socket.send(JSON.stringify({ op: 'fetch', reqId }))
+    expect(await closed).toBe(1008)
+    expect(codes).toContain('unauthorized')
+    expect(codes).toContain('rate_limited')
+  }, 30_000)
+
+  it('refuses frames over the size limit', async () => {
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/v1/ws/${'b'.repeat(32)}`)
+    const replies: { code?: string; message?: string }[] = []
+    const replied = new Promise<void>((resolve) => {
+      socket.addEventListener('message', (event) => {
+        replies.push(JSON.parse(String(event.data)))
+        if (replies.length === 2) resolve()
+      })
+    })
+    await new Promise((resolve) => socket.addEventListener('open', resolve))
+    socket.send('x'.repeat(MAX_FRAME_BYTES + 1))
+    await replied
+    expect(replies[1]).toMatchObject({ code: 'bad_frame', message: 'Frame too large' })
+    socket.close()
+  })
+
+  it('answers a connection flood from one IP with 429s', async () => {
+    // `fetch` won't send an Upgrade header, so this speaks HTTP directly.
+    const attempt = () =>
+      new Promise<number>((resolve, reject) => {
+        const request = httpRequest({
+          host: '127.0.0.1',
+          port,
+          path: `/v1/ws/${'c'.repeat(32)}`,
+          headers: {
+            connection: 'Upgrade',
+            upgrade: 'websocket',
+            'sec-websocket-version': '13',
+            'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==',
+          },
+        })
+        request.on('upgrade', (_response, socket) => {
+          socket.destroy()
+          resolve(101)
+        })
+        request.on('response', (response) => {
+          response.resume()
+          resolve(response.statusCode as number)
+        })
+        request.on('error', reject)
+        request.end()
+      })
+    const statuses: number[] = []
+    for (let i = 0; i < 200 && !statuses.includes(429); i++) statuses.push(await attempt())
+    expect(statuses).toContain(429)
+    expect(statuses.filter((status) => status === 101).length).toBeGreaterThan(5)
+  }, 30_000)
+
+  it('refuses plain HTTP on the socket path', async () => {
+    expect((await fetch(`http://127.0.0.1:${port}/v1/ws/${'d'.repeat(32)}`)).status).toBe(426)
+  })
 })

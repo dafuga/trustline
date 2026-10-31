@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
+  MAX_FRAME_BYTES,
   generateIdentity,
   relayAuthBytes,
   sign,
@@ -8,16 +9,26 @@ import {
 } from '@dafuga/trustline-protocol'
 import WebSocket from 'ws'
 import {
+  DEFAULT_LIMITS,
   MAILBOX_TTL_MS,
   MAX_POSTS_PER_SIDE,
   MAX_QUEUE,
   MAX_QUEUE_PER_SENDER,
   MailboxLogic,
+  RateLimiter,
   RoomLogic,
   TOMBSTONE_MS,
+  handleFrame,
+  ipKey,
+  newConnection,
+  rateGuard,
   startDevRelay,
+  takeToken,
   type DevRelay,
   type KeyValueStore,
+  type RateGuard,
+  type RelayBackend,
+  type RelayLimits,
 } from '../src/index.js'
 
 class TestKv implements KeyValueStore {
@@ -320,5 +331,220 @@ describe('dev relay over WebSockets', () => {
 
   it('refuses connections to other paths', async () => {
     await expect(open(relay, '/somewhere/else')).rejects.toThrow()
+  })
+})
+
+describe('rate buckets', () => {
+  const rate = { burst: 2, perSecond: 1 }
+
+  it('spends a burst, then refills with time, capped at the burst', () => {
+    const first = takeToken(undefined, rate, 0)
+    const second = takeToken(first ?? undefined, rate, 0)
+    expect(second).toEqual({ tokens: 0, at: 0 })
+    expect(takeToken(second ?? undefined, rate, 0)).toBeNull()
+    expect(takeToken(second ?? undefined, rate, 1000)).toEqual({ tokens: 0, at: 1000 })
+    expect(takeToken(second ?? undefined, rate, 1_000_000)).toEqual({ tokens: 1, at: 1_000_000 })
+  })
+
+  it('keeps keys apart', () => {
+    const limiter = new RateLimiter(() => 0)
+    expect(limiter.take('a', { burst: 1, perSecond: 1 })).toBe(true)
+    expect(limiter.take('a', { burst: 1, perSecond: 1 })).toBe(false)
+    expect(limiter.take('b', { burst: 1, perSecond: 1 })).toBe(true)
+  })
+
+  it('stays bounded when flooded with keys', () => {
+    let now = 0
+    const limiter = new RateLimiter(() => now)
+    const spent = { burst: 1, perSecond: 0.001 }
+    expect(limiter.take('victim', spent)).toBe(true)
+    for (let i = 0; i < 20_000; i++) {
+      now++
+      limiter.take(`key-${i}`, { burst: 5, perSecond: 1000 })
+    }
+    const size = (limiter as unknown as { buckets: Map<string, unknown> }).buckets.size
+    expect(size).toBeLessThanOrEqual(10_000)
+  })
+
+  it('treats an IPv6 /64 as one caller and unwraps mapped IPv4', () => {
+    expect(ipKey('2001:db8:1:2:aaaa::1')).toBe(ipKey('2001:db8:1:2:bbbb::2'))
+    expect(ipKey('2001:db8:1:2:aaaa::1')).not.toBe(ipKey('2001:db8:1:3::1'))
+    expect(ipKey('2001:db8::1')).toBe('2001:db8:0:0::/64')
+    expect(ipKey('::ffff:203.0.113.9')).toBe('203.0.113.9')
+    expect(ipKey('203.0.113.9')).toBe('203.0.113.9')
+  })
+})
+
+describe('handleFrame limits', () => {
+  const backend = {} as RelayBackend
+  const open: RateGuard = { message: () => true, authenticated: () => true }
+  const limits: RelayLimits = { ...DEFAULT_LIMITS, messagesPerConnection: { burst: 2, perSecond: 1 }, maxStrikes: 2 }
+  const junk = JSON.stringify({ op: 'fetch', reqId: 7 })
+
+  it('charges malformed frames too, then hangs up on repeat offenders', async () => {
+    let state = newConnection(undefined, 'ip').state
+    const options = { limits, now: () => 0 }
+    for (const raw of ['nonsense', 'nonsense']) {
+      const result = await handleFrame(state, raw, backend, open, options)
+      expect(JSON.parse(result.reply)).toMatchObject({ code: 'bad_frame' })
+      state = result.state
+    }
+    const refused = await handleFrame(state, junk, backend, open, options)
+    expect(JSON.parse(refused.reply)).toEqual({
+      kind: 'error',
+      reqId: 7,
+      code: 'rate_limited',
+      message: 'Too many messages; slow down',
+    })
+    expect(refused.close).toBe(false)
+    expect((await handleFrame(refused.state, junk, backend, open, options)).close).toBe(true)
+  })
+
+  it('wears strikes off slowly, so a steady flood below the burst still gets closed', async () => {
+    let state = newConnection(undefined, 'ip').state
+    let now = 0
+    const slow = { ...limits, maxStrikes: 3 }
+    const options = { limits: slow, now: () => now }
+    for (let i = 0; i < 4; i++) state = (await handleFrame(state, junk, backend, open, options)).state
+    expect(state.strikes).toBe(2)
+
+    // One token a second, three frames a second: most are refused, some get through.
+    let closed = false
+    for (let i = 0; i < 12 && !closed; i++) {
+      now += 334
+      const result = await handleFrame(state, junk, backend, open, options)
+      state = result.state
+      closed = result.close === true
+    }
+    expect(closed).toBe(true)
+
+    now += 60_000
+    const honest = newConnection(undefined, 'ip').state
+    const recovered = await handleFrame({ ...honest, strikes: 2 }, junk, backend, open, options)
+    expect(recovered.state.strikes).toBe(1)
+  })
+
+  it('never charges an unauthenticated frame to the device it names', async () => {
+    const devices: (string | undefined)[] = []
+    const spy: RateGuard = { ...open, message: (_ip, device) => (devices.push(device), true) }
+    const { state } = newConnection('a'.repeat(32), 'ip')
+    await handleFrame(state, junk, backend, spy)
+    expect(devices).toEqual([undefined])
+  })
+
+  it('limits by IP and by device through the shared guard', async () => {
+    const limiter = new RateLimiter(() => 0)
+    const strict = { ...DEFAULT_LIMITS, messagesPerDevice: { burst: 1, perSecond: 1 } }
+    const ipCalls: string[] = []
+    const guard = rateGuard(limiter, (ip) => (ipCalls.push(ip), ip !== 'banned'), strict)
+    expect(await guard.message('banned', undefined)).toBe(false)
+    expect(await guard.message('fine', 'device')).toBe(true)
+    expect(await guard.message('fine', 'device')).toBe(false)
+    expect(ipCalls).toEqual(['banned', 'fine'])
+  })
+
+  it('closed-fails frames when the limiter errors', async () => {
+    const broken: RateGuard = { ...open, message: () => Promise.reject(new Error('down')) }
+    const result = await handleFrame(newConnection(undefined, 'ip').state, junk, backend, broken)
+    expect(JSON.parse(result.reply)).toMatchObject({ code: 'internal' })
+  })
+
+  it('measures frame size in bytes, not characters', async () => {
+    const wide = '\u{20AC}'.repeat(Math.ceil(MAX_FRAME_BYTES / 2))
+    const result = await handleFrame(newConnection(undefined, 'ip').state, wide, backend, open)
+    expect(JSON.parse(result.reply)).toMatchObject({ code: 'bad_frame', message: 'Frame too large' })
+  })
+})
+
+describe('dev relay rate limits', () => {
+  let relay: DevRelay
+  const alice = generateIdentity()
+
+  afterEach(async () => {
+    await relay.close()
+  })
+
+  it('refuses connections past the per-IP rate with a 429', async () => {
+    relay = await startDevRelay({ port: 0, limits: { connectionsPerIp: { burst: 2, perSecond: 0.001 } } })
+    const sockets = [await open(relay, `/v1/ws/${alice.deviceId}`), await open(relay, `/v1/ws/${alice.deviceId}`)]
+    await expect(open(relay, `/v1/ws/${alice.deviceId}`)).rejects.toThrow('429')
+    for (const socket of sockets) socket.ws.close()
+  })
+
+  it('refuses a device reconnecting too fast, but only after it proves who it is', async () => {
+    relay = await startDevRelay({ port: 0, limits: { connectionsPerDevice: { burst: 1, perSecond: 0.001 } } })
+    const first = await authed(relay, alice)
+    const socket = await open(relay, `/v1/ws/${alice.deviceId}`)
+    const challenge = await socket.next()
+    if (challenge.kind !== 'challenge') throw new Error('expected challenge')
+    const closed = new Promise<number>((resolve) => socket.ws.once('close', resolve))
+    const reply = await socket.call({
+      op: 'auth',
+      reqId: 1,
+      deviceId: alice.deviceId,
+      signPublicKey: alice.signPublicKey,
+      signature: sign(relayAuthBytes(challenge.nonce, alice.deviceId), alice),
+    })
+    expect(reply).toMatchObject({ kind: 'error', code: 'rate_limited', reqId: 1 })
+    expect(await closed).toBe(1008)
+    first.ws.close()
+  })
+
+  it("can't be used to lock a device out by hammering its public path", async () => {
+    relay = await startDevRelay({ port: 0, limits: { connectionsPerDevice: { burst: 1, perSecond: 0.001 } } })
+    for (let i = 0; i < 5; i++) (await open(relay, `/v1/ws/${alice.deviceId}`)).ws.close()
+    const victim = await authed(relay, alice)
+    expect(await victim.call({ op: 'fetch', reqId: 2 })).toMatchObject({ kind: 'ok' })
+    victim.ws.close()
+  })
+
+  it('refuses message floods on a connection, then closes it', async () => {
+    relay = await startDevRelay({
+      port: 0,
+      limits: { messagesPerConnection: { burst: 3, perSecond: 0.001 }, maxStrikes: 2 },
+    })
+    const socket = await open(relay, `/v1/ws/${alice.deviceId}`)
+    await socket.next()
+    const closed = new Promise<number>((resolve) => socket.ws.once('close', resolve))
+    for (let reqId = 1; reqId <= 6; reqId++) socket.ws.send(JSON.stringify({ op: 'fetch', reqId }))
+    const replies = [await socket.next(), await socket.next(), await socket.next(), await socket.next(), await socket.next()]
+    expect(replies.slice(0, 3).map((reply) => reply.kind === 'error' && reply.code)).toEqual(Array(3).fill('unauthorized'))
+    expect(replies.slice(3)).toMatchObject([
+      { code: 'rate_limited', reqId: 4 },
+      { code: 'rate_limited', reqId: 5 },
+    ])
+    expect(await closed).toBe(1008)
+  })
+
+  it('limits one device across all its connections', async () => {
+    relay = await startDevRelay({ port: 0, limits: { messagesPerDevice: { burst: 2, perSecond: 0.001 } } })
+    const first = await authed(relay, alice)
+    const second = await authed(relay, alice)
+    expect(await first.call({ op: 'fetch', reqId: 2 })).toMatchObject({ kind: 'ok' })
+    expect(await second.call({ op: 'fetch', reqId: 2 })).toMatchObject({ kind: 'ok' })
+    expect(await first.call({ op: 'fetch', reqId: 3 })).toMatchObject({ code: 'rate_limited' })
+    expect(await second.call({ op: 'fetch', reqId: 3 })).toMatchObject({ code: 'rate_limited' })
+    first.ws.close()
+    second.ws.close()
+  })
+
+  it('limits one IP across devices', async () => {
+    relay = await startDevRelay({ port: 0, limits: { messagesPerIp: { burst: 3, perSecond: 0.001 } } })
+    const first = await authed(relay, alice)
+    const second = await authed(relay, generateIdentity())
+    expect(await first.call({ op: 'fetch', reqId: 2 })).toMatchObject({ kind: 'ok' })
+    expect(await second.call({ op: 'fetch', reqId: 2 })).toMatchObject({ code: 'rate_limited' })
+    first.ws.close()
+    second.ws.close()
+  })
+
+  it('drops frames over the size limit', async () => {
+    relay = await startDevRelay({ port: 0 })
+    const socket = await open(relay, `/v1/ws/${alice.deviceId}`)
+    await socket.next()
+    const closed = new Promise<number>((resolve) => socket.ws.once('close', resolve))
+    socket.ws.on('error', () => undefined)
+    socket.ws.send('x'.repeat(MAX_FRAME_BYTES + 1))
+    expect(await closed).toBe(1009)
   })
 })

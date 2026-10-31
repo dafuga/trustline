@@ -5,6 +5,7 @@ import { WebSocketServer } from 'ws'
 import type { KeyValueStore } from './core/kv.js'
 import { MailboxLogic } from './core/mailbox.js'
 import { RoomLogic } from './core/room.js'
+import { DEFAULT_LIMITS, RateLimiter, ipKey, rateGuard, type RelayLimits } from './core/rate-limit.js'
 import { handleFrame, newConnection, type RelayBackend } from './core/session.js'
 
 class MemoryKv implements KeyValueStore {
@@ -84,12 +85,16 @@ export interface DevRelayOptions {
   port?: number
   host?: string
   now?: () => number
+  limits?: Partial<RelayLimits>
 }
 
 /** The local relay: same frames and same logic as the Worker, kept in memory. */
 export async function startDevRelay(options: DevRelayOptions = {}): Promise<DevRelay> {
   const { port = 8787, host = '127.0.0.1', now = Date.now } = options
   const { backend, purge } = memoryBackend(now)
+  const limits = { ...DEFAULT_LIMITS, ...options.limits }
+  const limiter = new RateLimiter(now)
+  const guard = rateGuard(limiter, (ip) => limiter.take(`message:${ip}`, limits.messagesPerIp), limits)
 
   const server = createServer((_request, response) => {
     response.writeHead(200, { 'content-type': 'text/plain' }).end('trustline dev relay\n')
@@ -99,16 +104,24 @@ export async function startDevRelay(options: DevRelayOptions = {}): Promise<DevR
   server.on('upgrade', (request, socket, head) => {
     const match = /^\/v1\/ws\/([0-9a-f]{32})$/.exec(request.url ?? '')
     if (!match) return void socket.destroy()
+    const ip = ipKey(request.socket.remoteAddress ?? 'unknown')
+    if (!limiter.take(`connect:${ip}`, limits.connectionsPerIp)) {
+      return void socket.end('HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
+    }
     sockets.handleUpgrade(request, socket, head, (ws) => {
-      const connection = newConnection(match[1])
+      const connection = newConnection(match[1], ip)
       let state = connection.state
       let queue: Promise<void> = Promise.resolve()
       ws.send(connection.greeting)
+      // `ws` has already closed the socket; without a listener, one oversized frame would kill the relay.
+      ws.on('error', () => undefined)
       ws.on('message', (data) => {
         queue = queue.then(async () => {
-          const result = await handleFrame(state, data.toString(), backend)
+          if (ws.readyState !== ws.OPEN) return
+          const result = await handleFrame(state, data.toString(), backend, guard, { limits, now })
           state = result.state
           ws.send(result.reply)
+          if (result.close) ws.close(1008, 'rate limited')
         })
       })
     })

@@ -27,6 +27,10 @@ function unavailable(url: string): CliError {
   return new CliError(ExitCode.RELAY_UNAVAILABLE, 'relay_unavailable', `Could not reach the relay at ${url}`)
 }
 
+function rateLimited(): CliError {
+  return new CliError(ExitCode.RELAY_UNAVAILABLE, 'rate_limited', 'The relay is rate limiting this device. Try again in a minute.')
+}
+
 function parseFrame(text: string) {
   try {
     return ServerFrame.safeParse(JSON.parse(text))
@@ -68,6 +72,7 @@ export class RelayClient {
     if (!pending) return
     this.pending.delete(frame.data.reqId)
     if (frame.data.kind === 'ok') pending.resolve(frame.data.result)
+    else if (frame.data.code === 'rate_limited') pending.reject(rateLimited())
     else pending.reject(new RelayRejection(frame.data.code))
   }
 
@@ -105,9 +110,9 @@ export class RelayClient {
         signPublicKey: identity.signPublicKey,
         signature: sign(relayAuthBytes(challenge, identity.deviceId), identity),
       })
-    } catch {
+    } catch (error) {
       client.close()
-      throw unavailable(baseUrl)
+      throw error instanceof CliError ? error : unavailable(baseUrl)
     }
     return client
   }

@@ -40,6 +40,7 @@ export const RelayErrorCode = z.enum([
   'room_expired',
   'room_used',
   'room_full',
+  'rate_limited',
   'internal',
 ])
 export type RelayErrorCode = z.infer<typeof RelayErrorCode>

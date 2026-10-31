@@ -7,8 +7,13 @@ compatibility_date = "2026-10-01"
 bindings = [
   { name = "MAILBOX", class_name = "Mailbox" },
   { name = "ROOM", class_name = "PairingRoom" },
+  { name = "RATE_GATE", class_name = "RateGate" },
 ]
 
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Mailbox", "PairingRoom"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["RateGate"]

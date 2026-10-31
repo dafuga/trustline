@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers'
 import type { QueuedItem } from '@dafuga/trustline-protocol'
 import { MailboxLogic } from './core/mailbox.js'
+import { DEFAULT_LIMITS, RateLimiter, ipKey, rateGuard, type Rate } from './core/rate-limit.js'
 import { RoomLogic } from './core/room.js'
 import { handleFrame, newConnection, type ConnectionState, type RelayBackend } from './core/session.js'
 import type { KeyValueStore } from './core/kv.js'
@@ -8,6 +9,7 @@ import type { KeyValueStore } from './core/kv.js'
 export interface Env {
   MAILBOX: DurableObjectNamespace<Mailbox>
   ROOM: DurableObjectNamespace<PairingRoom>
+  RATE_GATE: DurableObjectNamespace<RateGate>
 }
 
 function storageKv(storage: DurableObjectStorage): KeyValueStore {
@@ -17,6 +19,14 @@ function storageKv(storage: DurableObjectStorage): KeyValueStore {
     delete: (keys) => (typeof keys === 'string' ? storage.delete(keys) : storage.delete(keys)),
     list: (options) => storage.list(options),
   }
+}
+
+function ipGate(env: Env, ip: string) {
+  return env.RATE_GATE.get(env.RATE_GATE.idFromName(ip))
+}
+
+function callerIp(request: Request): string {
+  return ipKey(request.headers.get('cf-connecting-ip') ?? 'unknown')
 }
 
 function backendFor(env: Env): RelayBackend {
@@ -38,13 +48,19 @@ function backendFor(env: Env): RelayBackend {
 /** One per device: holds its WebSocket and its transient ciphertext queue. */
 export class Mailbox extends DurableObject<Env> {
   private readonly logic = new MailboxLogic(storageKv(this.ctx.storage))
+  /** This device's allowance. It lives in memory, so eviction forgives it; a socket's own bucket doesn't reset. */
+  private readonly guard = rateGuard(
+    new RateLimiter(),
+    (ip) => ipGate(this.env, ip).take('message', DEFAULT_LIMITS.messagesPerIp),
+    DEFAULT_LIMITS,
+  )
 
   override async fetch(request: Request): Promise<Response> {
     if (request.headers.get('upgrade') !== 'websocket') return new Response('Expected WebSocket', { status: 426 })
     const expected = new URL(request.url).pathname.split('/').pop()
     const { 0: client, 1: server } = new WebSocketPair()
     this.ctx.acceptWebSocket(server)
-    const { state, greeting } = newConnection(expected)
+    const { state, greeting } = newConnection(expected, callerIp(request))
     server.serializeAttachment(state)
     server.send(greeting)
     return new Response(null, { status: 101, webSocket: client })
@@ -53,9 +69,10 @@ export class Mailbox extends DurableObject<Env> {
   override async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const raw = typeof message === 'string' ? message : new TextDecoder().decode(message)
     const state = ws.deserializeAttachment() as ConnectionState
-    const result = await handleFrame(state, raw, backendFor(this.env))
+    const result = await handleFrame(state, raw, backendFor(this.env), this.guard)
     ws.serializeAttachment(result.state)
     ws.send(result.reply)
+    if (result.close) ws.close(1008, 'rate limited')
   }
 
   override async webSocketClose(ws: WebSocket): Promise<void> {
@@ -121,11 +138,26 @@ export class PairingRoom extends DurableObject<Env> {
   }
 }
 
+/** One per IP (or IPv6 /64): counters shared by every Worker isolate, kept in memory only. */
+export class RateGate extends DurableObject<Env> {
+  private readonly limiter = new RateLimiter()
+
+  take(kind: 'connect' | 'message', rate: Rate): boolean {
+    return this.limiter.take(kind, rate)
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const { pathname } = new URL(request.url)
     const match = /^\/v1\/ws\/([0-9a-f]{32})$/.exec(pathname)
-    if (match?.[1]) return env.MAILBOX.get(env.MAILBOX.idFromName(match[1])).fetch(request)
+    if (match?.[1]) {
+      if (request.headers.get('upgrade') !== 'websocket') return new Response('Expected WebSocket', { status: 426 })
+      // Checked out here so that a flood never wakes the Mailbox it is aimed at.
+      const allowed = await ipGate(env, callerIp(request)).take('connect', DEFAULT_LIMITS.connectionsPerIp)
+      if (!allowed) return new Response('Too many connections', { status: 429 })
+      return env.MAILBOX.get(env.MAILBOX.idFromName(match[1])).fetch(request)
+    }
     if (pathname === '/health') return new Response('ok')
     return new Response('Not found', { status: 404 })
   },
