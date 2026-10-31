@@ -1,0 +1,25 @@
+{
+  "name": "trustline-monorepo",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=22" },
+  "workspaces": ["packages/protocol", "packages/relay", "packages/cli"],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "typecheck": "npm run typecheck --workspaces",
+    "lint": "eslint .",
+    "pretest": "npm run build",
+    "test": "vitest run",
+    "relay:dev": "npm run build && node packages/cli/dist/bin.js relay dev"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.0",
+    "@types/node": "^22.0.0",
+    "eslint": "^10.14.0",
+    "typescript": "^5.9.0",
+    "typescript-eslint": "^8.72.1",
+    "vitest": "^5.0.5"
+  }
+}

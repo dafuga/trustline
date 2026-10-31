@@ -1,0 +1,6 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "rootDir": ".", "types": ["node"] },
+  "include": ["src", "test"],
+  "exclude": ["src/worker.ts"]
+}

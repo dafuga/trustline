@@ -1,0 +1,21 @@
+{
+  "name": "@dafuga/trustline-protocol",
+  "version": "0.1.0",
+  "description": "Trustline message types, crypto, pairing, permissions, and hash-chained log.",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=22" },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@noble/hashes": "^2.4.0",
+    "tweetnacl": "^1.0.3",
+    "zod": "^4.6.7"
+  }
+}

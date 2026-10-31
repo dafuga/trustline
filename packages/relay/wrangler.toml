@@ -1,0 +1,14 @@
+# No account_id on purpose. This Worker has not been deployed.
+name = "trustline-relay"
+main = "src/worker.ts"
+compatibility_date = "2026-10-01"
+
+[durable_objects]
+bindings = [
+  { name = "MAILBOX", class_name = "Mailbox" },
+  { name = "ROOM", class_name = "PairingRoom" },
+]
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Mailbox", "PairingRoom"]
