@@ -15,7 +15,7 @@ import { CliError, ExitCode } from './errors.js'
 export const REQUEST_TTL_MS = 24 * 60 * 60 * 1000
 
 export interface SyncResult {
-  relay: 'ok' | 'unreachable'
+  relay: 'ok' | 'unreachable' | 'not_configured'
   received: number
   rejected: number
 }
@@ -190,6 +190,11 @@ export async function expireRequests(context: Context): Promise<void> {
   for (const item of stale) await home.appendLog(now(), 'request.expired', { requestId: item.id })
 }
 
+/** A line for human output when a command worked from local state alone. */
+export function relayNote(relay: SyncResult['relay'] | 'skipped'): string[] {
+  return relay === 'not_configured' ? ['No relay is set. Set TRUSTLINE_RELAY_URL or pass --relay <url>.'] : []
+}
+
 /** Exchanges queued traffic with the relay. Being offline is reported, not thrown. */
 export async function sync(context: Context): Promise<SyncResult> {
   try {
@@ -206,7 +211,8 @@ export async function sync(context: Context): Promise<SyncResult> {
   } catch (error) {
     if (error instanceof CliError && error.exitCode === ExitCode.RELAY_UNAVAILABLE) {
       await context.home.locked(() => expireRequests(context))
-      return { relay: 'unreachable', received: 0, rejected: 0 }
+      const relay = error.code === 'relay_not_configured' ? 'not_configured' : 'unreachable'
+      return { relay, received: 0, rejected: 0 }
     }
     throw error
   }

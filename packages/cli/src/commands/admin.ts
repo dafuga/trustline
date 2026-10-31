@@ -4,7 +4,7 @@ import { CliError, ExitCode } from '../errors.js'
 import type { Peer } from '../home.js'
 import type { CommandResult } from '../main.js'
 import { formatTime, sanitize } from '../output.js'
-import { queueMessage, sync } from '../sync.js'
+import { queueMessage, relayNote, sync } from '../sync.js'
 
 function publicPeer(peer: Peer) {
   const { id, name, role, status, pairedAt, revokedAt, grants } = peer
@@ -34,6 +34,7 @@ export async function status(context: Context, options: { offline: boolean }): P
     text: [
       `Device: ${identity.deviceId}`,
       `Relay: ${relayUrl} (${relay})`,
+      ...relayNote(relay),
       `Pending requests: ${pending}`,
       ...peers.map(
         (peer) =>

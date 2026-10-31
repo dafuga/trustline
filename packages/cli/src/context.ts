@@ -3,7 +3,9 @@ import { CliError, ExitCode } from './errors.js'
 import { Home, type Peer } from './home.js'
 import { RelayClient } from './relay-client.js'
 
-export const DEFAULT_RELAY_URL = 'ws://127.0.0.1:8787'
+/** A placeholder until a relay exists. `<account>` is the Cloudflare workers.dev subdomain. */
+export const DEFAULT_RELAY_URL = 'wss://trustline-relay.<account>.workers.dev'
+export const LOCAL_RELAY_URL = 'ws://127.0.0.1:8787'
 
 export interface Context {
   home: Home
@@ -28,7 +30,19 @@ export async function loadContext(env: NodeJS.ProcessEnv, flags: Flags): Promise
   return { home, identity, relayUrl, name, now: Date.now }
 }
 
+function assertRelayConfigured(relayUrl: string): void {
+  if (!relayUrl.includes('<account>')) return
+  throw new CliError(
+    ExitCode.RELAY_UNAVAILABLE,
+    'relay_not_configured',
+    `No relay is set: ${relayUrl} is a placeholder. ` +
+      'Set TRUSTLINE_RELAY_URL or pass --relay <url> with your own relay. ' +
+      `For local development, run \`trustline relay dev\` and use ${LOCAL_RELAY_URL}.`,
+  )
+}
+
 export async function withRelay<T>(context: Context, run: (client: RelayClient) => Promise<T>): Promise<T> {
+  assertRelayConfigured(context.relayUrl)
   const client = await RelayClient.connect(context.relayUrl, context.identity)
   try {
     return await run(client)

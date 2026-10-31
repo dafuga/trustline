@@ -413,7 +413,32 @@ describe('trustline end to end', () => {
       const result = await cli(personHome, null, '--json', '--relay', relay.url, 'status')
       expect(result.json.relay).toEqual({ url: relay.url, state: 'ok' })
       expect((await cli(personHome, null, 'status', '--json')).json.relay.url).toBe(relay.url)
-      expect(DEFAULT_RELAY_URL).toMatch(/^ws:/)
+    })
+
+    it('refuses the placeholder relay with a message saying what to set', async () => {
+      expect(DEFAULT_RELAY_URL).toBe('wss://trustline-relay.<account>.workers.dev')
+      const started = await cli(personHome, null, 'pair', 'start', '--json')
+      expect(started.code).toBe(ExitCode.RELAY_UNAVAILABLE)
+      expect(started.json.error.code).toBe('relay_not_configured')
+      expect(started.json.error.message).toContain('TRUSTLINE_RELAY_URL')
+      expect(started.json.error.message).toContain('--relay')
+      expect(started.json.error.message).toContain('ws://127.0.0.1:8787')
+
+      const flagged = await cli(personHome, DEFAULT_RELAY_URL, 'pair', 'start', '--json')
+      expect(flagged.json.error.code).toBe('relay_not_configured')
+    })
+
+    it('keeps local commands working without a relay, and says why it is not syncing', async () => {
+      const status = await cli(personHome, null, 'status', '--json')
+      expect(status.code).toBe(0)
+      expect(status.json.relay).toEqual({ url: DEFAULT_RELAY_URL, state: 'not_configured' })
+      expect((await cli(personHome, null, 'inbox')).stdout).toContain('TRUSTLINE_RELAY_URL')
+      expect((await cli(personHome, null, 'revoke', '--all', '--json')).code).toBe(0)
+    })
+
+    it('still reaches a local dev relay', async () => {
+      const result = await cli(personHome, relay.url, 'pair', 'start', '--json')
+      expect(result.code).toBe(0)
     })
 
     it('strips terminal escapes from helper text in human output', async () => {

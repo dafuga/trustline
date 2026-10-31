@@ -199,7 +199,11 @@ async function runRelayDev(args: string[], io: Io, json: boolean): Promise<numbe
     port: values.port === undefined ? undefined : Number(values.port),
     host: values.host as string | undefined,
   })
-  io.out(json ? JSON.stringify({ ok: true, url: relay.url, port: relay.port }) : `Dev relay listening on ${relay.url}`)
+  io.out(
+    json
+      ? JSON.stringify({ ok: true, url: relay.url, port: relay.port })
+      : `Dev relay listening on ${relay.url}\nPoint the CLI at it: export TRUSTLINE_RELAY_URL=${relay.url}`,
+  )
   await new Promise<void>((resolve) => {
     process.once('SIGINT', resolve)
     process.once('SIGTERM', resolve)

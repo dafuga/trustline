@@ -12,7 +12,7 @@ import { InboxItem, type Peer } from '../home.js'
 import type { CommandResult } from '../main.js'
 import { formatTime, sanitize } from '../output.js'
 import { RelayRejection } from '../relay-client.js'
-import { REQUEST_TTL_MS, decisionFor, expireRequests, queueMessage, sync } from '../sync.js'
+import { REQUEST_TTL_MS, decisionFor, expireRequests, queueMessage, relayNote, sync } from '../sync.js'
 
 
 function renderItem(item: InboxItem): string {
@@ -38,9 +38,11 @@ export async function inbox(
   const items = await home.inbox()
   const wanted = options.state ?? 'pending'
   const shown = options.all ? items : items.filter((item) => item.state === wanted)
+  const relay = synced?.relay ?? 'skipped'
+  const listing = shown.length > 0 ? shown.map(renderItem).join('\n\n') : `No ${options.all ? '' : `${wanted} `}requests.`
   return {
-    data: { relay: synced?.relay ?? 'skipped', requests: shown },
-    text: shown.length > 0 ? shown.map(renderItem).join('\n\n') : `No ${options.all ? '' : `${wanted} `}requests.`,
+    data: { relay, requests: shown },
+    text: [...relayNote(relay), listing].join('\n'),
   }
 }
 
