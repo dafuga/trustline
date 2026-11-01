@@ -1,5 +1,5 @@
-# No account_id on purpose. This Worker has not been deployed.
-# Once it is, clients use wss://trustline-relay.<account>.workers.dev.
+# No account_id on purpose: pass CLOUDFLARE_ACCOUNT_ID at deploy time.
+# Public test relay: wss://trustline-relay.danielfugere28.workers.dev
 name = "trustline-relay"
 main = "src/worker.ts"
 compatibility_date = "2026-10-01"

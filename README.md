@@ -6,7 +6,9 @@ Trustline lets a trusted helper, such as a guardian or a kid helping their paren
 - Messages are end-to-end encrypted. The relay in the middle only moves ciphertext between paired devices.
 - **Only the person controls their own settings.** There is no guardian or helper control of settings, even for vulnerable people. Nothing in the protocol can express it.
 
-v1 is a CLI that the person's bot drives, connected through a relay on Cloudflare Workers. **It has not been deployed and has not had a security audit.**
+v1 is a CLI that the person's bot drives, connected through a relay on Cloudflare Workers. A public test relay runs at `wss://trustline-relay.danielfugere28.workers.dev` (deployed from this branch). **It has not had a security audit; treat it as experimental.**
+
+To use it: `export TRUSTLINE_RELAY_URL=wss://trustline-relay.danielfugere28.workers.dev`. To smoke-test it: `TRUSTLINE_LIVE_RELAY=wss://trustline-relay.danielfugere28.workers.dev npx vitest run packages/cli/test/live.test.ts` (skipped by default).
 
 ## Install and develop
 
@@ -45,7 +47,7 @@ tl pair join ABCD-EFGH-JKMN --name Sam --wait 60
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `TRUSTLINE_HOME` | Config directory. One directory is one identity. | `~/.trustline` |
-| `TRUSTLINE_RELAY_URL` | Relay address. `--relay <url>` beats it and is remembered. | `wss://trustline-relay.<account>.workers.dev` |
+| `TRUSTLINE_RELAY_URL` | Relay address. `--relay <url>` beats it and is remembered. | Placeholder `wss://trustline-relay.<account>.workers.dev`, which the CLI refuses. The public test relay is `wss://trustline-relay.danielfugere28.workers.dev`. |
 
 The default relay is a placeholder, because no relay is deployed. The CLI refuses to connect to it and tells you what to set (`relay_not_configured`). Local commands still work, and `status` and `inbox` report the relay as `not_configured`.
 
