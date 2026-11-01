@@ -1,0 +1,26 @@
+{
+  "name": "@dafuga/trustline-relay",
+  "version": "0.1.0",
+  "description": "Trustline ciphertext relay: Cloudflare Worker (Durable Objects + WebSockets) and a local Node dev relay.",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=22" },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "files": ["dist", "src", "wrangler.toml"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.worker.json --noEmit",
+    "worker:dev": "wrangler dev --local"
+  },
+  "dependencies": {
+    "@dafuga/trustline-protocol": "^0.1.0",
+    "ws": "^8.22.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261031.1",
+    "@types/ws": "^8.5.0",
+    "wrangler": "^4.156.0"
+  }
+}

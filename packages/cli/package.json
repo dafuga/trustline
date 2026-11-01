@@ -1,0 +1,24 @@
+{
+  "name": "@dafuga/trustline",
+  "version": "0.1.0",
+  "description": "Trustline CLI: let a trusted helper send instructions to a person's AI assistant, with approval on the person's side.",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=22" },
+  "bin": { "trustline": "dist/bin.js" },
+  "main": "./dist/main.js",
+  "types": "./dist/main.d.ts",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json && node -e \"require('fs').chmodSync('dist/bin.js', 0o755)\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@dafuga/trustline-protocol": "^0.1.0",
+    "@dafuga/trustline-relay": "^0.1.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "tweetnacl": "^1.0.3"
+  }
+}
