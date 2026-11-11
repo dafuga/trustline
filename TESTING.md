@@ -15,6 +15,7 @@ The repository began at `9edae88` with no executable code. The initial executabl
 | Phone/browser transport | Validation suite: CORS preflight, no-cache/referrer headers on success/errors; crypto suite exercises injected Fetch with no installation requirement | accurate and complete |
 | E2E encryption | Client recipe suite: independent clients exchange encrypted Unicode both directions, request has no key/plaintext, randomized IV, tamper/wrong-key/channel binding failures | accurate and complete |
 | Actual HTTP and runtime persistence | `test/network.test.mjs`: native Node Fetch/Web Crypto and curl against the emitted Worker, two-way encrypted values, channel separation, independent saved cursor, dispose/recreate with disk data, monotonic sequence | accurate and complete |
+| Existing production namespace compatibility | Three workerd cases require the earlier class exports, retain synthetic stored state through a 410 request, an alarm, and eviction; no destructive migrations are used | covered by deployment regression |
 
 Tests use generated synthetic channel/key material, never live credentials. Each test gets an independent channel. Local workerd tests require no Cloudflare login. All retention clocks are controlled in tests; the platform alarm helper triggers the real alarm handler.
 
@@ -40,6 +41,7 @@ Tests prove local API, durable storage lifecycle, retention, and client cryptogr
 
 ## Recorded results
 
+- Production compatibility repair, 2026-11-11: the added regression first failed for all three missing legacy class exports (**3 failed / 70 passed**). With compatibility exports and the preserved `v1`/`v2` migration history plus the new `v3` channel migration, **73 passed / 73** and the native HTTP fixture **1 passed / 1**, with no skips. Type/syntax checks and the dry-run build passed. Automated tests ran on `harbor-mbp-2`; no browser UI exists for screenshot testing. The compatibility cases seed synthetic legacy data and verify it survives a retired-handler request, an alarm, and object eviction.
 - Initial executable scaffold: **62 failed / 8 passed / 70 total**. Missing send/read routes returned 404 instead of 201/200; missing client behavior failed the recipe assertions. The eight already-correct checks were invalid-route 404s. This scaffold was created for a repository containing only README/LICENSE, not represented as a prior deployed implementation.
 - Delivered implementation: **70 passed / 70** across two workerd/Vitest files; **1 passed / 1** native-HTTP fixture. No skipped or cancelled tests. The HTTP fixture also exercises the README's curl POST/GET shapes and checks the pasted recipe equals the tested source.
 - `npm run check`: passed (strict TypeScript for Worker, browser recipe, workerd tests; Node fixture syntax check). `npm run build`: passed, local dry run; bundle **7.36 KiB / gzip 2.63 KiB**. `git diff --check`: passed.

@@ -2,7 +2,9 @@
 
 A small encrypted HTTP mailbox for two bots. POST to send; GET to catch up. Each channel has its own URL and durable, non-destructive message history. A phone bot with HTTP and JavaScript/Web Crypto tools needs no package installation or command-line tools.
 
-**Experimental; not security audited.** This repository implements the HTTP design. It has no accounts, pairing flow, grants, approval windows, OS dialogs, CLI product, or WebSockets. Nothing has been deployed by this change.
+**Experimental; not security audited.** This repository implements the HTTP design. It has no accounts, pairing flow, grants, approval windows, OS dialogs, CLI product, or WebSockets.
+
+Public relay origin: **https://trustline-relay.danielfugere28.workers.dev**. The root returns 404 because this is an API, not a website. Generate a private channel with the client recipe below; the public origin alone is not a channel invitation.
 
 ## Two bots, one channel
 
@@ -198,4 +200,4 @@ npm run dev    # optional local-only development server
 
 `npm run dev` uses loopback at `http://localhost:8787`; generate a local invitation with that origin. Local state stays under ignored `.wrangler/`. Tests run the actual workerd runtime with SQLite Durable Objects, simulated clocks, eviction, and real alarm handlers. See [TESTING.md](TESTING.md) for acceptance mapping and proof boundaries.
 
-`wrangler.jsonc` declares the Worker, SQLite Durable Object binding, and initial class migration for a later, separately authorized deployment. It contains no account ID, route, secret, or production relay reference. Deployment is intentionally absent from package scripts. No production endpoint is needed for tests.
+`wrangler.jsonc` targets the existing `trustline-relay` Worker. Its migration history preserves the earlier `Mailbox`, `PairingRoom`, and `RateGate` namespaces and adds the HTTP `Channel` namespace at `v3`. Compatibility exports retain the earlier stored data without exposing it through the HTTP API; their old handlers return 410 and their alarms do not modify storage. There are no delete, rename, or transfer migrations. It contains no credentials or custom-domain routes. Deployment is intentionally absent from package scripts, and no production endpoint is needed for tests.

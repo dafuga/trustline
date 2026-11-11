@@ -26,6 +26,27 @@ async function read(id: string, after = '0') {
 
 afterEach(() => vi.useRealTimers());
 
+describe('retired relay namespace compatibility', () => {
+  it.each(['Mailbox', 'PairingRoom', 'RateGate'])('preserves stored %s data through requests, alarms, and eviction', async className => {
+    const namespaces = exports as unknown as Record<string, DurableObjectNamespace>;
+    expect(namespaces[className], 'existing production namespace must remain exported').toBeDefined();
+    const stub = namespaces[className].getByName(crypto.randomUUID());
+    const saved = { version: 1, retained: 'synthetic legacy state' };
+    await runInDurableObject(stub, async (_instance, ctx) => {
+      await ctx.storage.put('legacy-state', saved);
+      await ctx.storage.setAlarm(Date.now() + 60_000);
+    });
+    const response = await stub.fetch('https://legacy.test/');
+    expect(response.status).toBe(410);
+    expect(await response.json()).toEqual({ error: 'protocol_retired' });
+    expect(await runDurableObjectAlarm(stub)).toBe(true);
+    await evictDurableObject(stub);
+    await runInDurableObject(stub, async (_instance, ctx) => {
+      expect(await ctx.storage.get('legacy-state')).toEqual(saved);
+    });
+  });
+});
+
 describe('HTTP store-and-forward', () => {
   it('starts empty, sends both ways, and lets two readers catch up independently', async () => {
     const id = channel();

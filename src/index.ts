@@ -20,6 +20,23 @@ function json(body: unknown, status = 200) {
   return Response.json(body, { status, headers: HEADERS });
 }
 
+// The public relay previously provisioned these namespaces. Keep their exports
+// and storage intact: removing a class would require a destructive migration.
+// No public route or binding exposes them in the HTTP protocol.
+class RetiredRelayState extends DurableObject<Env> {
+  async fetch() {
+    return json({ error: 'protocol_retired' }, 410);
+  }
+
+  async alarm() {
+    // Consume any legacy alarm without changing its stored data.
+  }
+}
+
+export class Mailbox extends RetiredRelayState {}
+export class PairingRoom extends RetiredRelayState {}
+export class RateGate extends RetiredRelayState {}
+
 // Enforce the limit while streaming, even if Content-Length is absent or false.
 async function readMessage(request: Request): Promise<string | Response> {
   const mediaType = request.headers.get('Content-Type')?.split(';')[0].trim().toLowerCase();
